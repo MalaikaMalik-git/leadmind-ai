@@ -63,14 +63,15 @@ export const startWebCall = async (req: Request, res: Response): Promise<void> =
       return;
     }
 
-    // ── Make sure the campaign has a synced VAPI assistant (same as phone flow) ──
-    if (!campaign.vapiAssistantId) {
-      try {
-        campaign.vapiAssistantId = await syncCampaignAssistant(campaign);
-        campaign.vapiSyncedAt = new Date();
-        await campaign.save();
-      } catch (syncErr: any) {
-        console.error('[startWebCall] assistant sync failed:', syncErr.response?.data || syncErr.message);
+    // Refresh the saved assistant so this call uses the current script and
+    // calendar tools, even if the campaign was synced before those existed.
+    try {
+      campaign.vapiAssistantId = await syncCampaignAssistant(campaign);
+      campaign.vapiSyncedAt = new Date();
+      await campaign.save();
+    } catch (syncErr: any) {
+      console.error('[startWebCall] assistant sync failed:', syncErr.response?.data || syncErr.message);
+      if (!campaign.vapiAssistantId) {
         res.status(502).json({ success: false, message: 'Could not sync campaign to VAPI before starting the web call.' });
         return;
       }

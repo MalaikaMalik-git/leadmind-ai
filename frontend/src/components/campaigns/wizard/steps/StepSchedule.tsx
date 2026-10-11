@@ -15,7 +15,7 @@
 
 import { useState } from 'react';
 import { Calendar, Moon, Info, ChevronDown } from 'lucide-react';
-import type { CampaignFormData } from '@/src/app/dashboard/campaigns/create/page';
+import type { CampaignFormData } from '@/src/components/campaigns/campaignForm';
 
 interface StepScheduleProps {
   form: CampaignFormData;

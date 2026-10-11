@@ -18,18 +18,20 @@
 // ─────────────────────────────────────────────
 
 import { useState, useEffect, useCallback } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Plus, Upload, Megaphone, AlertCircle, RefreshCw } from 'lucide-react';
 
 import CampaignStatsBar from '@/src/components/campaigns/CampaignStatsBar';
 import CampaignCard, { Campaign } from '@/src/components/campaigns/CampaignCard';
 import DeleteCampaignModal from '@/src/components/campaigns/DeleteCampaignModal';
+import CreateCampaignDialog from '@/src/components/campaigns/CreateCampaignDialog';
 import Toast, { ToastState } from '@/src/components/ui/Toast';
 import {
   fetchCampaigns,
   fetchCampaignStats,
   updateCampaignStatus,
   restoreCampaign,
+  CampaignQuery,
 } from '@/src/lib/api/campaigns';
 import { PageLoader } from '@/src/components/ui/Spinner';
 
@@ -47,6 +49,8 @@ const EMPTY_STATS: Stats = { total: 0, running: 0, paused: 0, draft: 0, complete
 
 export default function CampaignsPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const urlSearch = (searchParams?.get('search') || '').trim();
 
   // ── State ─────────────────────────────────────
   const [activeTab,      setActiveTab]      = useState<FilterTab>('All');
@@ -57,14 +61,23 @@ export default function CampaignsPage() {
   const [error,          setError]          = useState<string | null>(null);
   const [actionLoading,  setActionLoading]  = useState<string | null>(null); // campaign id being actioned
   const [deleteTarget,   setDeleteTarget]   = useState<Campaign | null>(null);  // campaign in the archive/delete dialog
+  const [creating,       setCreating]       = useState(false);
   const [toast,          setToast]          = useState<ToastState | null>(null);
+
+  useEffect(() => {
+    if (searchParams?.get('create') === '1') setCreating(true);
+  }, [searchParams]);
 
   // ── Fetch campaigns for current tab ──────────
   const loadCampaigns = useCallback(async (tab: FilterTab) => {
     setLoading(true);
     setError(null);
     try {
-      const query = tab === 'All' ? {} : { status: tab as Campaign['status'] };
+      const query: CampaignQuery = tab === 'All' ? {} : { status: tab as Campaign['status'] };
+      if (urlSearch) {
+        query.search = urlSearch;
+        query.includeArchived = true;
+      }
       const { campaigns: data } = await fetchCampaigns(query);
       setCampaigns(data);
     } catch (err: any) {
@@ -72,7 +85,7 @@ export default function CampaignsPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [urlSearch]);
 
   // ── Fetch stats bar data ──────────────────────
   const loadStats = useCallback(async () => {
@@ -87,16 +100,17 @@ export default function CampaignsPage() {
     }
   }, []);
 
-  // ── On mount: load both stats + campaigns ─────
+  // ── On mount: load stats. Campaigns reload when the tab or the search changes.
   useEffect(() => {
     loadStats();
-    loadCampaigns('All');
-  }, [loadStats, loadCampaigns]);
+  }, [loadStats]);
 
-  // ── On tab change: reload filtered campaigns ──
+  useEffect(() => {
+    loadCampaigns(activeTab);
+  }, [loadCampaigns, activeTab]);
+
   const handleTabChange = (tab: FilterTab) => {
     setActiveTab(tab);
-    loadCampaigns(tab);
   };
 
   // ── Pause handler ─────────────────────────────
@@ -199,7 +213,7 @@ export default function CampaignsPage() {
           <HeaderBtn
             icon={<Plus size={13} strokeWidth={2.5} />}
             label="New Campaign"
-            onClick={() => router.push('/dashboard/campaigns/create')}
+            onClick={() => setCreating(true)}
             primary={true}
           />
         </div>
@@ -230,6 +244,25 @@ export default function CampaignsPage() {
           >
             <RefreshCw size={11} />
             Retry
+          </button>
+        </div>
+      )}
+
+      {urlSearch && (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+          <span style={{ fontSize: 12, color: '#94A3B8' }}>
+            Campaigns matching “{urlSearch}”
+          </span>
+          <button
+            type="button"
+            onClick={() => router.replace('/dashboard/campaigns')}
+            style={{
+              padding: '4px 10px', borderRadius: 6, cursor: 'pointer',
+              background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)',
+              color: '#94A3B8', fontSize: 11, fontWeight: 500,
+            }}
+          >
+            Clear search
           </button>
         </div>
       )}
@@ -279,7 +312,7 @@ export default function CampaignsPage() {
       ) : campaigns.length === 0 ? (
         <EmptyState
           tab={activeTab}
-          onCreate={() => router.push('/dashboard/campaigns/create')}
+          onCreate={() => setCreating(true)}
         />
       ) : (
         <div style={{
@@ -304,6 +337,22 @@ export default function CampaignsPage() {
         </div>
       )}
 
+      {creating && (
+        <CreateCampaignDialog
+          onClose={() => {
+            setCreating(false);
+            if (searchParams?.get('create') === '1') router.replace('/dashboard/campaigns');
+          }}
+          onCreated={(message) => {
+            setCreating(false);
+            setToast({ type: 'success', message });
+            loadStats();
+            loadCampaigns(activeTab);
+            if (searchParams?.get('create') === '1') router.replace('/dashboard/campaigns');
+          }}
+          onUploadLeads={(campaignId) => router.push(`/dashboard/leads/import?campaignId=${campaignId}`)}
+        />
+      )}
       {deleteTarget && (
         <DeleteCampaignModal
           campaign={deleteTarget}

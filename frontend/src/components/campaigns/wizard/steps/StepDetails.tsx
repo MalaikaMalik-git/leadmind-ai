@@ -16,7 +16,7 @@
 // ─────────────────────────────────────────────
 
 import { FileText, Target, MessageSquare, Phone } from 'lucide-react';
-import type { CampaignFormData } from '@/src/app/dashboard/campaigns/create/page';
+import type { CampaignFormData } from '@/src/components/campaigns/campaignForm';
 
 interface StepDetailsProps {
   form: CampaignFormData;

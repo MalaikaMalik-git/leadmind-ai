@@ -105,7 +105,13 @@ export const placeTestOutboundCall = async (req: Request, res: Response): Promis
       const vapiCall = await createOutboundCall(
         campaign.vapiAssistantId,
         phoneNumber,
-        buildPhoneCallOverrides(campaign, { leadEmail: lead.email })
+        buildPhoneCallOverrides(campaign, { leadEmail: lead.email, leadName: lead.fullName }),
+        {
+          leadmindCallLogId: String(callLog._id),
+          leadmindLeadId: String(lead._id),
+          leadmindCampaignId: String(campaign._id),
+          leadmindChannel: 'phone',
+        }
       );
       callLog.vapiCallId = vapiCall.id;
       await callLog.save();

@@ -17,7 +17,7 @@
 // ─────────────────────────────────────────────
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import {
   Search, Filter, AlertCircle, RefreshCw, Upload,
   Users, ChevronLeft, ChevronRight, X,
@@ -39,6 +39,8 @@ const PAGE_SIZE = 20;
 
 export default function LeadsPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const urlSearch = searchParams?.get('search') ?? '';
 
   const [leads, setLeads] = useState<Lead[]>([]);
   const [total, setTotal] = useState(0);
@@ -48,8 +50,8 @@ export default function LeadsPage() {
 
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
 
-  const [searchInput, setSearchInput] = useState('');
-  const [search, setSearch] = useState(''); // debounced value actually used in the query
+  const [searchInput, setSearchInput] = useState(urlSearch);
+  const [search, setSearch] = useState(urlSearch); // debounced value actually used in the query
   const [status, setStatus] = useState<LeadStatus | ''>('');
   const [campaignFilter, setCampaignFilter] = useState('');
   const [source, setSource] = useState<LeadSource | ''>('');
@@ -58,6 +60,13 @@ export default function LeadsPage() {
   const [sortOrder, setSortOrder] = useState<NonNullable<LeadQuery['sortOrder']>>('desc');
 
   const hasActiveFilters = !!(search || status || campaignFilter || source);
+
+  // Arriving from the top-bar search (?search=) fills this page's own box.
+  useEffect(() => {
+    setSearchInput(urlSearch);
+    setSearch(urlSearch);
+    setPage(1);
+  }, [urlSearch]);
 
   // ── Debounce the search box so we don't fire a request on every keystroke ──
   useEffect(() => {

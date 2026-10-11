@@ -4,11 +4,13 @@
 //
 // Before this file, the whole booking algorithm lived inside
 // meetingController.bookMeeting, so only an admin clicking "book" could use
-// it. It is now a service with exactly two callers:
+// it. Callers:
 //   1. meetingController.bookMeeting        — an admin picks a slot manually
-//   2. meetingAutomationService            — a call just ended with a
-//                                            QUALIFIED lead (phone OR web call)
-// so both paths are guaranteed to behave identically: same double-booking
+//   2. meetingAutomationService            — a qualified call ended without a
+//                                            time, on the phone or the web demo
+//   3. callSchedulingTools                 — the agent books a free slot
+//                                            during the call
+// so every path behaves the same: same double-booking
 // re-check, same Google Calendar sync, same invitation email.
 //
 // Invitation email strategy (the "meeting link must reach the lead and not
@@ -72,7 +74,11 @@ export async function getMeetingSlotSettings(adminId: string) {
 //  Earliest bookable slot — same algorithm GET /api/calendar/slots uses.
 // ─────────────────────────────────────────────────────────────────────────────
 
-export async function findNextAvailableSlot(accessToken: string, meetingSlot: any, horizonDays = 14): Promise<Date | null> {
+export async function listAvailableSlots(
+  accessToken: string,
+  meetingSlot: any,
+  horizonDays = 14
+): Promise<Array<{ start: Date; end: Date }>> {
   const rangeStart = new Date();
   const days = Math.max(1, Math.min(meetingSlot.maximumAdvanceDays, horizonDays));
   const rangeEnd = new Date(rangeStart.getTime() + days * 24 * 60 * 60 * 1000);
@@ -90,7 +96,7 @@ export async function findNextAvailableSlot(accessToken: string, meetingSlot: an
     })),
   ];
 
-  const slots = computeAvailableSlots({
+  return computeAvailableSlots({
     availabilityWindows: meetingSlot.availabilityWindows,
     durationMinutes: meetingSlot.defaultMeetingDurationMinutes,
     bufferMinutes: meetingSlot.bufferMinutes,
@@ -101,7 +107,10 @@ export async function findNextAvailableSlot(accessToken: string, meetingSlot: an
     rangeEnd,
     busyPeriods,
   });
+}
 
+export async function findNextAvailableSlot(accessToken: string, meetingSlot: any, horizonDays = 14): Promise<Date | null> {
+  const slots = await listAvailableSlots(accessToken, meetingSlot, horizonDays);
   return slots.length > 0 ? slots[0].start : null;
 }
 
@@ -109,7 +118,30 @@ export async function findNextAvailableSlot(accessToken: string, meetingSlot: an
 //  bookMeetingForLead
 // ─────────────────────────────────────────────────────────────────────────────
 
-export async function bookMeetingForLead(args: BookingArgs): Promise<BookingResult> {
+// Serializes bookings for one lead so a live tool call and the post-call
+// fallback cannot both pass the "already booked" check.
+const bookingTails = new Map<string, Promise<unknown>>();
+
+function withBookingLock<T>(leadId: string, fn: () => Promise<T>): Promise<T> {
+  const prev = bookingTails.get(leadId) ?? Promise.resolve();
+  const run = prev.then(fn, fn);
+  bookingTails.set(
+    leadId,
+    run.then(
+      () => undefined,
+      () => undefined
+    )
+  );
+  return run;
+}
+
+export function bookMeetingForLead(args: BookingArgs): Promise<BookingResult> {
+  const leadId = args.lead?._id ? String(args.lead._id) : '';
+  if (!leadId) return performBooking(args);
+  return withBookingLock(leadId, () => performBooking(args));
+}
+
+async function performBooking(args: BookingArgs): Promise<BookingResult> {
   const { adminId, lead, requestedStart, inviteEmail, transcriptId, notes, bookedBy } = args;
 
   const meetingSlot = args.meetingSlot || (await getMeetingSlotSettings(adminId));

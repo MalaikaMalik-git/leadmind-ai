@@ -5,7 +5,7 @@ import { useState } from 'react';
 import { usePathname } from 'next/navigation';
 import {
   LayoutDashboard, Megaphone, Users, Phone,
-  FileText, CalendarDays, BarChart3, Settings,
+  CalendarDays, BarChart3, Settings,
   ChevronLeft, ChevronRight, LogOut,
 } from 'lucide-react';
 import SidebarNavItem from './SidebarNavItem';
@@ -16,12 +16,11 @@ const NAV_MAIN = [
   { href: '/dashboard/campaigns',   icon: Megaphone,       label: 'Campaigns'   },
   { href: '/dashboard/leads',       icon: Users,           label: 'Leads'       },
   { href: '/dashboard/calls',       icon: Phone,           label: 'Calls'       },
-  { href: '/dashboard/transcripts', icon: FileText,        label: 'Transcripts' },
+  { href: '/dashboard/analytics',   icon: BarChart3,       label: 'Analytics'   },
 ] as const;
 
 const NAV_MANAGE = [
   { href: '/dashboard/scheduling',  icon: CalendarDays,    label: 'Scheduling'  },
-  { href: '/dashboard/analytics',   icon: BarChart3,       label: 'Analytics'   },
   { href: '/dashboard/settings',    icon: Settings,        label: 'Settings'    },
 ] as const;
 

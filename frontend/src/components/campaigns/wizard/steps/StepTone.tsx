@@ -13,7 +13,7 @@
 // ─────────────────────────────────────────────
 
 import { Briefcase, Smile, ArrowRight, Users, Zap, Heart, Check } from 'lucide-react';
-import type { CampaignFormData } from '@/src/app/dashboard/campaigns/create/page';
+import type { CampaignFormData } from '@/src/components/campaigns/campaignForm';
 
 interface StepToneProps {
   form: CampaignFormData;

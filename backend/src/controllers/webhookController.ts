@@ -80,13 +80,16 @@ const CallLog = require('../models/CallLog');
 const Lead = require('../models/Lead');
 const Transcript = require('../models/Transcript');
 const Campaign = require('../models/Campaign');
+const Meeting = require('../models/Meeting');
 import { dialNextEligibleLead, isQueueExhausted } from '../services/campaignOrchestratorService';
 import { qualifyAndPersist } from '../services/qualificationService';
 import { analyzeAndPersistTopics } from '../services/topicAnalysisService';
 import { autoBookMeetingForQualifiedLead } from '../services/meetingAutomationService';
+import { runSchedulingTool } from '../services/callSchedulingTools';
 import { getBusinessHoursStatus } from '../utils/businessHours';
 import { buildInboundAssistantConfig, buildOutsideHoursAssistantConfig } from '../services/vapiService';
 import { logError } from '../utils/errorLog';
+import { buildTranscriptMessages } from '../utils/transcriptMessages';
 
 // ── Statuses that mean the call never actually connected — eligible for retry ──
 const RETRYABLE_CALL_STATUSES = ['No Answer', 'Busy', 'Voicemail', 'Failed'];
@@ -114,20 +117,6 @@ function mapEndedReasonToStatus(endedReason: string | undefined): string {
   if (reason.includes('error') || reason.includes('pipeline')) return 'Failed';
 
   return 'Completed';
-}
-
-// ── Converts VAPI's raw transcript/messages into our Transcript.messages[] shape ──
-function buildTranscriptMessages(vapiMessages: any[] | undefined): Array<{ speaker: 'AI' | 'Lead'; text: string; timestamp: Date }> {
-  if (!Array.isArray(vapiMessages)) return [];
-
-  return vapiMessages
-    .filter((m) => m.role === 'assistant' || m.role === 'user')
-    .map((m) => ({
-      speaker: (m.role === 'assistant' ? 'AI' : 'Lead') as 'AI' | 'Lead',
-      text: m.message || m.content || '',
-      timestamp: m.time ? new Date(m.time) : new Date(),
-    }))
-    .filter((m) => m.text.trim().length > 0);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -163,15 +152,35 @@ export const handleVapiWebhook = async (req: Request, res: Response): Promise<vo
         handleAssistantRequest(message, res);
         return;
 
+      case 'tool-calls':
+      case 'function-call':
+        // The model is waiting on this body. A generic ack would leave it
+        // with no calendar result, and it must not invent a meeting time.
+        await handleToolCalls(message, res);
+        return;
+
       default:
-        // Not an event we act on yet (e.g. transcript partials, function-call
-        // events used later for live qualification)
+        // Not an event we act on yet (e.g. transcript partials)
         break;
     }
 
     res.status(200).json({ received: true, handled: true, type: message.type });
   } catch (err: any) {
     await logError('webhook.handleVapiWebhook', err, { messageType: req.body?.message?.type });
+    if (res.headersSent) return;
+    const messageType = req.body?.message?.type;
+    if (messageType === 'tool-calls' || messageType === 'function-call') {
+      const fallback = JSON.stringify({
+        calendarChecked: false,
+        say: 'The team will email a confirmed time. Do not name a day or time.',
+      });
+      if (messageType === 'function-call') {
+        res.status(200).json({ result: fallback });
+        return;
+      }
+      res.status(200).json({ results: [{ toolCallId: 'error', result: fallback }] });
+      return;
+    }
     // Still respond 200 — VAPI will retry on non-2xx, and we've already
     // logged the error for debugging. Returning 500 here would just cause
     // repeated retries of an event we already failed to process once.
@@ -353,19 +362,103 @@ async function findOrCreateInboundCallLog(message: any): Promise<any | null> {
 // ─────────────────────────────────────────────────────────────────────────────
 async function findCallLogForEvent(message: any): Promise<any | null> {
   const vapiCallId = message.call?.id;
-  let callLog = await CallLog.findOne({ vapiCallId });
+  let callLog = vapiCallId ? await CallLog.findOne({ vapiCallId }) : null;
   if (callLog) return callLog;
 
   const metaId = message.call?.metadata?.leadmindCallLogId;
   if (metaId && /^[a-f\d]{24}$/i.test(String(metaId))) {
-    callLog = await CallLog.findOne({ _id: metaId, channel: 'Web', vapiCallId: null });
-    if (callLog) {
+    callLog = await CallLog.findById(metaId);
+    if (callLog && vapiCallId && !callLog.vapiCallId) {
       callLog.vapiCallId = vapiCallId;
       await callLog.save();
-      console.log(`[webhook] Web call matched via metadata — CallLog ${callLog._id} <- vapiCallId ${vapiCallId}`);
+      console.log(`[webhook] Call matched via metadata — CallLog ${callLog._id} <- vapiCallId ${vapiCallId}`);
     }
   }
   return callLog;
+}
+
+function parseToolArguments(raw: unknown): Record<string, unknown> {
+  if (!raw) return {};
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+  return typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+}
+
+function extractToolCalls(message: any): Array<{ id: string; name: string; args: Record<string, unknown> }> {
+  if (message.type === 'function-call' && message.functionCall) {
+    const fn = message.functionCall;
+    return [
+      {
+        id: fn.id || 'function-call',
+        name: fn.name,
+        args: parseToolArguments(fn.parameters || fn.arguments),
+      },
+    ];
+  }
+
+  const list = message.toolCallList || message.toolWithToolCallList || message.toolCalls || [];
+  if (!Array.isArray(list)) return [];
+  return list.map((tc: any, index: number) => {
+    const call = tc.toolCall || tc;
+    const fn = call.function || call;
+    return {
+      id: call.id || tc.id || tc.toolCallId || `tool-${index}`,
+      name: fn.name || call.name || tc.name,
+      args: parseToolArguments(fn.arguments || fn.parameters || call.arguments || tc.arguments),
+    };
+  });
+}
+
+async function resolveToolContext(message: any): Promise<{ leadId: string | null; campaignId: string | null }> {
+  const meta = message.call?.metadata || {};
+  let leadId = typeof meta.leadmindLeadId === 'string' ? meta.leadmindLeadId : '';
+  let campaignId = typeof meta.leadmindCampaignId === 'string' ? meta.leadmindCampaignId : '';
+  const isId = (value: string) => /^[a-f\d]{24}$/i.test(value);
+
+  if (!isId(leadId)) {
+    const callLog = await findCallLogForEvent(message);
+    if (callLog) {
+      leadId = String(callLog.lead);
+      if (!isId(campaignId) && callLog.campaign) campaignId = String(callLog.campaign);
+    }
+  }
+
+  return {
+    leadId: isId(leadId) ? leadId : null,
+    campaignId: isId(campaignId) ? campaignId : null,
+  };
+}
+
+async function handleToolCalls(message: any, res: Response): Promise<void> {
+  const calls = extractToolCalls(message);
+  const ctx = await resolveToolContext(message);
+  const results: Array<{ toolCallId: string; result: string }> = [];
+
+  for (const call of calls) {
+    let payload: Record<string, unknown>;
+    try {
+      payload = await runSchedulingTool(call.name, call.args, ctx);
+    } catch (err: any) {
+      await logError('webhook.toolCall', err, { tool: call.name, leadId: ctx.leadId });
+      payload = {
+        calendarChecked: false,
+        say: 'The team will email a confirmed time. Do not name a day or time.',
+      };
+    }
+    results.push({ toolCallId: call.id, result: JSON.stringify(payload) });
+  }
+
+  if (message.type === 'function-call') {
+    res.status(200).json({ result: results[0]?.result || '{}' });
+    return;
+  }
+  res.status(200).json({ results });
 }
 
 
@@ -485,7 +578,10 @@ export async function handleEndOfCallReport(message: any): Promise<void> {
   }
 
   // ── Build the transcript from VAPI's message array ──────────────────────
-  const transcriptMessages = buildTranscriptMessages(message.artifact?.messages || message.messages);
+  const transcriptMessages = buildTranscriptMessages(
+    message.artifact?.messages || message.messages,
+    message.transcript || message.artifact?.transcript || null
+  );
   const isPartial = finalStatus === 'Completed' && durationSeconds < 10 && transcriptMessages.length < 2;
 
   // ── Day 18, Session 2: consult the assistant-request routing decision ────
@@ -622,11 +718,31 @@ export async function handleEndOfCallReport(message: any): Promise<void> {
   await callLog.save();
 
   // ── Update the Lead record ────────────────────────────────────────────────
+  // Scoring writes Qualified onto the transcript. A meeting already created
+  // during the call must not be overwritten by that: a synced event stays
+  // Meeting Booked, and a calendar failure stays Qualified (Booking Failed).
+  const scheduledDuringCall = await Meeting.findOne({ lead: callLog.lead, status: 'Scheduled' })
+    .select('_id googleCalendar.syncStatus')
+    .lean();
+  const qualifiedOutcome =
+    transcript.finalStatus === 'Qualified' ||
+    transcript.finalStatus === 'Meeting Booked' ||
+    transcript.finalStatus === 'Qualified (Booking Failed)';
+  let leadStatus = transcript.finalStatus;
+  const bookingFields: Record<string, unknown> = {};
+  if (scheduledDuringCall?.googleCalendar?.syncStatus === 'Synced') {
+    leadStatus = 'Meeting Booked';
+    bookingFields.meeting = scheduledDuringCall._id;
+  } else if (scheduledDuringCall && qualifiedOutcome) {
+    leadStatus = 'Qualified (Booking Failed)';
+  }
+
   await Lead.updateOne(
     { _id: callLog.lead },
     {
       $set: {
-        status: transcript.finalStatus,
+        status: leadStatus,
+        ...bookingFields,
         lastCalledAt: endedAt,
       },
       $inc: { totalCallAttempts: 1 },
@@ -650,10 +766,12 @@ export async function handleEndOfCallReport(message: any): Promise<void> {
   }
 
   // ── Automatic meeting booking + invitation email for QUALIFIED leads ──────
-  // Applies to phone calls and web calls alike. Deliberately NOT awaited: it
-  // makes several Google/SMTP round-trips, and neither the VAPI webhook ack
-  // nor the web-call /sync request should wait on them. The result is stored
-  // on CallLog.autoBooking, which the UI polls. The service never throws; the
+  // Fallback for phone and web calls that qualified but did not book a time
+  // during the conversation. If the agent already booked, this skips the
+  // second meeting and the second email. Deliberately NOT awaited: it makes
+  // several Google/SMTP round-trips, and neither the VAPI webhook ack nor the
+  // web-call /sync request should wait on them. The result is stored on
+  // CallLog.autoBooking, which the UI polls. The service never throws; the
   // .catch is only a last-resort guard against an unhandled rejection.
   if (qualifiedForBooking) {
     void autoBookMeetingForQualifiedLead({

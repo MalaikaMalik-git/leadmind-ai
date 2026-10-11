@@ -145,7 +145,9 @@ export default function WebCallPanel({ onCallFinished }: { onCallFinished?: () =
       });
       vapi.on('message', (m: any) => {
         if (m?.type === 'transcript' && m.transcriptType === 'final' && m.transcript) {
-          setLines((prev) => [...prev, { speaker: m.role === 'assistant' ? 'AI' : 'Lead', text: m.transcript }]);
+          const role = String(m.role || '').toLowerCase();
+          const speaker = role === 'assistant' || role === 'bot' ? 'AI' : 'Lead';
+          setLines((prev) => [...prev, { speaker, text: m.transcript }]);
         }
       });
 
@@ -317,14 +319,16 @@ export default function WebCallPanel({ onCallFinished }: { onCallFinished?: () =
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <Calendar size={14} color="#A78BFA" />
                     <span style={{ fontSize: 13, color: '#E2E8F0', fontWeight: 600 }}>Book a meeting for this lead</span>
-                    {!autoNote && !result?.autoBooking && <span style={{ fontSize: 11, color: '#FBBF24' }}>Booking automatically…</span>}
+                    {!autoNote && !result?.autoBooking && !bookedInfo && (
+                      <span style={{ fontSize: 11, color: '#94A3B8' }}>A time is booked only if it was agreed on the call.</span>
+                    )}
                     {!slots && (
                       <button onClick={loadSlots} style={{ marginLeft: 'auto', fontSize: 12, padding: '5px 10px', borderRadius: 6, border: '1px solid #334155', background: 'transparent', color: '#93C5FD', cursor: 'pointer' }}>
                         Load available slots
                       </button>
                     )}
                   </div>
-                  {autoNote && <div style={{ fontSize: 12, color: '#FBBF24' }}>Automatic booking: {autoNote}</div>}
+                  {autoNote && <div style={{ fontSize: 12, color: '#FBBF24' }}>{autoNote}</div>}
                   {slotsError && <div style={{ fontSize: 12, color: '#F87171' }}>{slotsError} {slotsError.toLowerCase().includes('connect') && <Link href="/dashboard/settings" style={{ color: '#60A5FA' }}>Open Settings</Link>}</div>}
                   {slots && slots.slots.length === 0 && <div style={{ fontSize: 12, color: '#94A3B8' }}>No free slots in the next few days — check Scheduling settings.</div>}
                   {slots && slots.slots.length > 0 && (
@@ -345,7 +349,9 @@ export default function WebCallPanel({ onCallFinished }: { onCallFinished?: () =
                   <span style={{ width: '100%', fontSize: 12, color: bookedInfo.inviteEmailedTo ? '#94A3B8' : '#FBBF24' }}>
                     {bookedInfo.inviteEmailedTo
                       ? `The meeting link was emailed to ${bookedInfo.inviteEmailedTo}${bookedInfo.inviteVia === 'google' ? ' (Google Calendar invitation — check Spam if it is missing)' : ''}.`
-                      : 'No email on file for this lead — no invitation was sent. Share the meeting link manually.'}
+                      : bookedInfo.inviteError
+                        ? `The meeting is booked, but the email did not send. ${bookedInfo.inviteError}`
+                        : 'No email on file for this lead — no invitation was sent. Share the meeting link manually.'}
                   </span>
                   {bookedInfo.inviteError && <span style={{ width: '100%', fontSize: 11, color: '#FBBF24' }}>Note: {bookedInfo.inviteError}</span>}
                 </div>

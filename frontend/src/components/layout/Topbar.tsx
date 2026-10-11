@@ -2,9 +2,10 @@
 import { Spinner } from '@/src/components/ui/Spinner';
 
 import { useState, useEffect, useRef } from 'react';
-import { Search, ChevronDown, LogOut, Settings, User, Bell } from 'lucide-react';
+import { ChevronDown, LogOut, Settings, User, Bell } from 'lucide-react';
 import { useAuthContext } from '@/src/context/AuthContext';
 import Link from 'next/link';
+import GlobalSearch from '@/src/components/layout/GlobalSearch';
 
 interface TopbarProps { title?: string; }
 
@@ -36,7 +37,7 @@ export default function Topbar({ title = 'Dashboard' }: TopbarProps) {
     : 'AD';
 
   return (
-    <header className="flex items-center gap-4 px-5 flex-shrink-0" style={{
+    <header className="relative z-40 flex items-center gap-4 px-5 flex-shrink-0" style={{
       height: 64,
       background: 'rgba(11,17,32,0.8)',
       backdropFilter: 'blur(12px)',
@@ -45,16 +46,7 @@ export default function Topbar({ title = 'Dashboard' }: TopbarProps) {
       {/* Page title */}
       <h1 className="text-white font-bold text-sm flex-shrink-0">{title}</h1>
 
-      {/* Search */}
-      <div className="relative" style={{ width: 280 }}>
-        <Search size={13} strokeWidth={2} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-600 pointer-events-none"/>
-        <input type="text" placeholder="Search leads, campaigns..."
-          className="w-full h-8 pl-8 pr-4 rounded-lg text-xs outline-none text-slate-300 placeholder-slate-600"
-          style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.07)' }}
-          onFocus={e => { e.target.style.borderColor = 'rgba(59,130,246,0.5)'; e.target.style.background = 'rgba(59,130,246,0.05)'; }}
-          onBlur={e  => { e.target.style.borderColor = 'rgba(255,255,255,0.07)'; e.target.style.background = 'rgba(255,255,255,0.05)'; }}
-        />
-      </div>
+      <GlobalSearch />
 
       <div className="flex-1"/>
 

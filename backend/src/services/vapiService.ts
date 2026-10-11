@@ -80,6 +80,125 @@ interface CampaignForPrompt {
   vapiAssistantId?: string | null;
 }
 
+// One place for the company story. The agent says this only after the lead
+// agrees to two minutes, and only in these words.
+const COMPANY_INTRO =
+  'LeadMind builds custom web apps, mobile apps, and AI features for businesses, using modern web, mobile, and cloud tools. The team is based in Islamabad, Pakistan.';
+
+// Live slot checks only work when VAPI can reach this server. Without that,
+// the agent must not invent a meeting time.
+function liveCalendarEnabled(): boolean {
+  return !!process.env.VAPI_WEBHOOK_URL;
+}
+
+/** First spoken line for phone and web calls: who is calling, one sentence, then permission. */
+export function buildOpeningLine(leadName?: string): string {
+  const firstName = (leadName || '').trim().split(/\s+/)[0];
+  const greeting = firstName ? `Hi ${firstName}, this is LeadMind.` : 'Hi, this is LeadMind.';
+  return `${greeting} We build custom software for businesses. Do you have two minutes?`;
+}
+
+function schedulingRules(): string {
+  if (!liveCalendarEnabled()) {
+    return [
+      `Meeting time:`,
+      `- The company calendar cannot be checked during this call, so never name a day or a time.`,
+      `- If they qualify, confirm their email, then say the team will email a confirmed time.`,
+    ].join('\n');
+  }
+  return [
+    `Meeting time (required before you end a qualified call — the company calendar decides):`,
+    `- Do not say goodbye, and do not say the team will send a time, until a meeting time is booked or the lead refuses a meeting.`,
+    `- After they qualify, confirm the email on file. If they correct it, call confirm_lead_email before you book. If there is no email, ask for one and confirm it the same way.`,
+    `- Then ask when they can meet. You must ask this. Turn their answer into an ISO-8601 time in Asia/Karachi (UTC+5), for example 2026-10-14T15:00:00+05:00, and call check_meeting_time. Do not say that time works until the tool says it is free.`,
+    `- If it is free, call book_meeting_time with the exact startTimeIso from the tool result, then tell them the spoken time from that result and that the meeting link is being emailed to the confirmed address.`,
+    `- If it is busy, apologize and ask whether they want the nearest open times or they would rather name another time. For suggestions, call suggest_meeting_times and offer only the spoken times it returns. If they name another time, check it again before booking.`,
+    `- Say a time only when it appears in a tool result. If a tool result says the calendar could not be checked, then say the team will follow up to confirm a time. Do not pick a time yourself.`,
+  ].join('\n');
+}
+
+function schedulingToolServer(): {
+  url: string;
+  secret?: string;
+  headers?: Record<string, string>;
+  timeoutSeconds: number;
+} | null {
+  const url = process.env.VAPI_WEBHOOK_URL;
+  if (!url) return null;
+  const secret = process.env.VAPI_WEBHOOK_SECRET;
+  return {
+    url,
+    ...(secret ? { secret, headers: { 'x-vapi-secret': secret } } : {}),
+    timeoutSeconds: 20,
+  };
+}
+
+/** Tools the model may call during a phone or web call. Omitted when no public webhook is configured. */
+export function buildSchedulingTools(): Array<Record<string, unknown>> | undefined {
+  const server = schedulingToolServer();
+  if (!server) return undefined;
+
+  const tool = (
+    name: string,
+    description: string,
+    properties: Record<string, unknown>,
+    required: string[]
+  ) => ({
+    type: 'function',
+    async: false,
+    server,
+    function: {
+      name,
+      description,
+      parameters: { type: 'object', properties, required },
+    },
+  });
+
+  return [
+    tool(
+      'confirm_lead_email',
+      'Save the email address the lead just confirmed. Call this before booking if they correct the address on file or if there was no address on file.',
+      {
+        email: { type: 'string', description: 'The email address the lead confirmed, exactly as they said it.' },
+      },
+      ['email']
+    ),
+    tool(
+      'check_meeting_time',
+      'Check the company calendar for the time the lead named. Call this before saying any time is free. Pass an ISO-8601 datetime in Asia/Karachi (UTC+5).',
+      {
+        startTimeIso: {
+          type: 'string',
+          description: 'ISO-8601 start time with offset, e.g. 2026-10-14T15:00:00+05:00.',
+        },
+      },
+      ['startTimeIso']
+    ),
+    tool(
+      'suggest_meeting_times',
+      'Return the nearest open meeting times. Offer only the spoken times in the result. Never invent a time.',
+      {
+        aroundIso: {
+          type: 'string',
+          description: 'Optional ISO-8601 time to search around. Omit it to get the soonest open times.',
+        },
+      },
+      []
+    ),
+    tool(
+      'book_meeting_time',
+      'Book a time that check_meeting_time or suggest_meeting_times already returned as free. Pass that exact startTimeIso. This also emails the meeting link.',
+      {
+        startTimeIso: {
+          type: 'string',
+          description: 'The exact startTimeIso from a previous check or suggest result.',
+        },
+      },
+      ['startTimeIso']
+    ),
+  ];
+}
+
 // Behaviour rules appended to every campaign prompt. They keep the agent in
 // the role of a real software-house representative: it never talks about
 // tests, demos or the system itself, and ignores any such wording that may
@@ -123,17 +242,22 @@ export function buildSystemPrompt(campaign: CampaignForPrompt): string {
   }
 
   return [
-    `You are an AI voice agent calling on behalf of a software house. Your job for this call is: ${goal}`,
+    `You are a representative of the LeadMind software team calling a prospect. Your job for this call is: ${goal}`,
     ``,
-    `Campaign-specific instructions from the admin (follow these exactly):`,
+    `Campaign-specific instructions from the admin (follow these, except where the call flow below says to stop):`,
     instructions,
     ``,
     `Speaking style: Be ${style}`,
     ``,
-    `During the conversation you must naturally gather the following information, one topic at a time — do not interrogate the lead with a rigid checklist, weave it into a normal conversation:`,
+    `Call flow (follow this order on every call):`,
+    `- The opening line already asked for two minutes. If they say no, thank them and end the call. Do not introduce the company and do not ask qualification questions.`,
+    `- If they say yes, give this short introduction and nothing longer: "${COMPANY_INTRO}"`,
+    `- Then ask whether they have a software need. If they say no, thank them and end the call. Do not ask qualification questions.`,
+    `- Only if they say yes, gather the following, one question at a time:`,
     ...qualificationLines,
+    `- If they are not a fit, thank them and end the call. Do not offer a meeting.`,
     ``,
-    `If the lead is not interested, thank them for their time and end the call politely. If the lead answers everything positively and clearly qualifies, thank them and let them know the team will confirm a follow-up meeting with them after this call. Never state a specific day or time yourself — the team's calendar decides that. Always be respectful of the lead's time.`,
+    schedulingRules(),
     ``,
     CONDUCT_RULES,
   ].join('\n');
@@ -147,11 +271,16 @@ export function buildSystemPrompt(campaign: CampaignForPrompt): string {
 export function buildAssistantConfig(campaign: CampaignForPrompt) {
   const voice = TONE_VOICE_MAP[campaign.tone] || TONE_VOICE_MAP.Professional;
 
+  const tools = buildSchedulingTools();
+
   return {
     // VAPI rejects assistant names longer than 40 characters (HTTP 400), so long
     // campaign names are truncated here. The full name stays on the Campaign.
     name: `LeadMind - ${campaign.name}`.slice(0, 40),
-    firstMessage: `Hi, this is LeadMind AI calling regarding ${campaign.goal}. Do you have a quick moment to chat?`,
+    firstMessage: buildOpeningLine(),
+    // Keep tool-calls off the assistant server. Each tool posts to its own
+    // server URL, so subscribing here as well would book the same slot twice.
+    ...(tools ? { serverMessages: ['status-update', 'end-of-call-report'] } : {}),
     model: {
       provider: 'openai',
       model: 'gpt-4o',
@@ -161,6 +290,7 @@ export function buildAssistantConfig(campaign: CampaignForPrompt) {
           content: buildSystemPrompt(campaign),
         },
       ],
+      ...(tools ? { tools } : {}),
     },
     voice: {
       provider: voice.provider,
@@ -210,7 +340,8 @@ export async function syncCampaignAssistant(campaign: CampaignForPrompt): Promis
 export async function createOutboundCall(
   assistantId: string,
   customerNumber: string,
-  assistantOverrides?: Record<string, unknown>
+  assistantOverrides?: Record<string, unknown>,
+  metadata?: Record<string, string>
 ): Promise<{ id: string; [key: string]: any }> {
   const phoneNumberId = process.env.VAPI_PHONE_NUMBER_ID;
 
@@ -221,6 +352,9 @@ export async function createOutboundCall(
       number: customerNumber,
     },
     ...(assistantOverrides ? { assistantOverrides } : {}),
+    // Echoed back on every webhook as message.call.metadata, so a live
+    // calendar tool can find this lead without waiting for the call to end.
+    ...(metadata ? { metadata } : {}),
   });
 
   return response.data;
@@ -228,21 +362,35 @@ export async function createOutboundCall(
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Meeting-invitation wording shared by phone and web calls.
-//  After a QUALIFIED call the backend books the next free slot and emails the
-//  lead the link (meetingAutomationService.ts). The agent must therefore only
-//  promise an email when we actually have an address to send it to.
+//  A time is booked only when the lead agrees to a free slot during the call.
+//  The agent must ask for that time, and must only promise an email once
+//  book_meeting_time has an address to send it to.
 // ─────────────────────────────────────────────────────────────────────────────
 
 function meetingEmailInstruction(leadEmail?: string | null): string {
+  const live = liveCalendarEnabled();
+  if (leadEmail && live) {
+    return (
+      `\n\nThe email address on file is ${leadEmail}. When they qualify, read it back and ask if it is correct. ` +
+      `If they give a different address, call confirm_lead_email before booking. ` +
+      `Then ask when they can meet. The meeting email goes out only after book_meeting_time succeeds, to the address they just confirmed.`
+    );
+  }
   if (leadEmail) {
     return (
-      `\n\nThe lead's email address on file is ${leadEmail}. If the lead qualifies, tell them a calendar invitation with the meeting link will be emailed to that address shortly after this call, ` +
-      `and if they ask, confirm the address is correct. Do not name a specific day or time — the invitation will contain it.`
+      `\n\nThe email address on file is ${leadEmail}. When they qualify, read it back and ask if it is correct. ` +
+      `Do not name a day or time. Tell them the team will email a confirmed time to that address.`
+    );
+  }
+  if (live) {
+    return (
+      `\n\nThere is no email address on file. When they qualify, ask for an email and call confirm_lead_email with it before booking. ` +
+      `Do not promise an email until an address has been confirmed.`
     );
   }
   return (
-    `\n\nWe do not have an email address for this lead, so do not promise an emailed invitation. ` +
-    `If the lead qualifies, say a team member will contact them to arrange the follow-up meeting.`
+    `\n\nThere is no email address on file. When they qualify, ask for an email so the team can write to them. ` +
+    `Do not name a day or time, and do not promise an email until they have given an address.`
   );
 }
 
@@ -252,13 +400,22 @@ function meetingEmailInstruction(leadEmail?: string | null): string {
  */
 export function buildPhoneCallOverrides(
   campaign: CampaignForPrompt,
-  options: { leadEmail?: string | null } = {}
+  options: { leadEmail?: string | null; leadName?: string | null } = {}
 ): Record<string, unknown> {
   const model: any = buildAssistantConfig(campaign).model;
   if (model?.messages?.[0]) {
     model.messages[0].content += meetingEmailInstruction(options.leadEmail);
   }
-  return { model };
+  const overrides: Record<string, unknown> = {
+    model,
+    firstMessage: buildOpeningLine(options.leadName || undefined),
+  };
+  // Same event list as the saved assistant: tool results come back on the
+  // tool server, not as a second copy of this call's server events.
+  if (liveCalendarEnabled()) {
+    overrides.serverMessages = ['status-update', 'end-of-call-report'];
+  }
+  return overrides;
 }
 
 /** Removes a campaign's VAPI assistant when the campaign is permanently deleted. Best-effort for callers. */
@@ -406,8 +563,8 @@ export function buildWebCallOverrides(
   };
 
   // Always use the CURRENT prompt (incl. conduct rules) for web calls, even if
-  // the campaign's saved VAPI assistant was synced before the prompt changed,
-  // and greet the lead by name like a real outreach call.
+  // the campaign's saved VAPI assistant was synced before the prompt changed.
+  // Phone and web share the same opening line and the same call flow.
   if (options.campaign) {
     const model: any = buildAssistantConfig(options.campaign).model;
     if (model?.messages?.[0]) {
@@ -415,10 +572,7 @@ export function buildWebCallOverrides(
     }
     overrides.model = model as Record<string, unknown>;
   }
-  const firstName = (options.leadName || '').trim().split(/\s+/)[0];
-  overrides.firstMessage = firstName
-    ? `Hi ${firstName}, this is LeadMind AI from the LeadMind software team. Thanks for your interest in custom software development. Do you have a couple of minutes to chat?`
-    : `Hi, this is LeadMind AI from the LeadMind software team. Thanks for your interest in custom software development. Do you have a couple of minutes to chat?`;
+  overrides.firstMessage = buildOpeningLine(options.leadName);
 
   const webhookUrl = process.env.VAPI_WEBHOOK_URL;
   if (webhookUrl) {

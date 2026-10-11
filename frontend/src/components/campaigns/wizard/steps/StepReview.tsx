@@ -17,7 +17,7 @@ import {
   FileText, Target, MessageSquare, Phone, Palette,
   Calendar, Moon, Pencil, Sparkles,
 } from 'lucide-react';
-import type { CampaignFormData } from '@/src/app/dashboard/campaigns/create/page';
+import type { CampaignFormData } from '@/src/components/campaigns/campaignForm';
 import { TONES } from './StepTone';
 
 interface StepReviewProps {
