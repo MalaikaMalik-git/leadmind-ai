@@ -8,6 +8,7 @@ import {
   getImportHistory,
   getLeadById,
   updateLead,
+  deleteLead,
 } from '../controllers/leadController';
 import { getLeadTranscripts } from '../controllers/transcriptController';
 
@@ -68,6 +69,7 @@ router.get('/import-history/:campaignId', getImportHistory);
 // ── Day 13: Lead Detail page & status management (UC-07) ────────────────────
 router.get('/:id', getLeadById);
 router.patch('/:id', validateUpdateLead, updateLead);
+router.delete('/:id', deleteLead);
 
 // ── Day 19: Transcript list for a lead (UC-08) ───────────────────────────────
 router.get('/:id/transcripts', getLeadTranscripts);

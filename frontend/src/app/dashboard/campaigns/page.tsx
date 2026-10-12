@@ -19,12 +19,13 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Plus, Upload, Megaphone, AlertCircle, RefreshCw } from 'lucide-react';
+import { Plus, Upload, Megaphone, AlertCircle, RefreshCw, ArrowLeft } from 'lucide-react';
 
 import CampaignStatsBar from '@/src/components/campaigns/CampaignStatsBar';
 import CampaignCard, { Campaign } from '@/src/components/campaigns/CampaignCard';
 import DeleteCampaignModal from '@/src/components/campaigns/DeleteCampaignModal';
 import CreateCampaignDialog from '@/src/components/campaigns/CreateCampaignDialog';
+import ImportLeadsDialog from '@/src/components/leads/ImportLeadsDialog';
 import Toast, { ToastState } from '@/src/components/ui/Toast';
 import {
   fetchCampaigns,
@@ -62,6 +63,7 @@ export default function CampaignsPage() {
   const [actionLoading,  setActionLoading]  = useState<string | null>(null); // campaign id being actioned
   const [deleteTarget,   setDeleteTarget]   = useState<Campaign | null>(null);  // campaign in the archive/delete dialog
   const [creating,       setCreating]       = useState(false);
+  const [importTarget,   setImportTarget]   = useState<{ id: string; name: string } | null>(null);
   const [toast,          setToast]          = useState<ToastState | null>(null);
 
   useEffect(() => {
@@ -176,7 +178,10 @@ export default function CampaignsPage() {
 
   // ── View + Import + Settings handlers ─────────
   const handleView     = (id: string) => router.push(`/dashboard/campaigns/${id}`);
-  const handleImport   = (id: string) => router.push(`/dashboard/leads/import?campaignId=${id}`);
+  const handleImport   = (id: string) => {
+    const campaign = campaigns.find((item) => item._id === id);
+    setImportTarget({ id, name: campaign?.name || 'this campaign' });
+  };
   const handleSettings = (id: string) => router.push(`/dashboard/campaigns/${id}/settings`);
 
   // ── Tab counts from stats ─────────────────────
@@ -196,6 +201,17 @@ export default function CampaignsPage() {
       {/* ── Page header ─────────────────────────── */}
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
         <div>
+          <button
+            type="button"
+            onClick={() => router.push('/dashboard')}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8,
+              background: 'none', border: 'none', cursor: 'pointer',
+              color: '#64748B', fontSize: 12, fontWeight: 500, padding: 0,
+            }}
+          >
+            <ArrowLeft size={13} strokeWidth={2} /> Dashboard
+          </button>
           <h2 style={{ color: '#F8FAFC', fontSize: 18, fontWeight: 700, margin: 0, lineHeight: 1 }}>
             Campaigns
           </h2>
@@ -350,7 +366,29 @@ export default function CampaignsPage() {
             loadCampaigns(activeTab);
             if (searchParams?.get('create') === '1') router.replace('/dashboard/campaigns');
           }}
-          onUploadLeads={(campaignId) => router.push(`/dashboard/leads/import?campaignId=${campaignId}`)}
+          onUploadLeads={(campaign) => {
+            setCreating(false);
+            setImportTarget({ id: campaign._id, name: campaign.name });
+            loadStats();
+            loadCampaigns(activeTab);
+            if (searchParams?.get('create') === '1') router.replace('/dashboard/campaigns');
+          }}
+        />
+      )}
+      {importTarget && (
+        <ImportLeadsDialog
+          campaignId={importTarget.id}
+          campaignName={importTarget.name}
+          onClose={() => setImportTarget(null)}
+          onImported={() => {
+            loadStats();
+            loadCampaigns(activeTab);
+          }}
+          onViewLeads={() => {
+            const id = importTarget.id;
+            setImportTarget(null);
+            router.push(`/dashboard/campaigns/${id}`);
+          }}
         />
       )}
       {deleteTarget && (

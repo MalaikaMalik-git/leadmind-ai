@@ -6,7 +6,7 @@
 //  UC-07  View Leads & Statuses
 // ─────────────────────────────────────────────
 
-import { ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
+import { ArrowUp, ArrowDown, ArrowUpDown, Trash2 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { Lead, LeadQuery } from '@/src/lib/api/leads';
 import LeadStatusBadge from './LeadStatusBadge';
@@ -16,6 +16,7 @@ interface LeadsTableProps {
   sortBy: NonNullable<LeadQuery['sortBy']>;
   sortOrder: NonNullable<LeadQuery['sortOrder']>;
   onSortChange: (sortBy: NonNullable<LeadQuery['sortBy']>) => void;
+  onDelete: (lead: Lead) => void;
 }
 
 interface ColumnDef {
@@ -32,7 +33,7 @@ const COLUMNS: ColumnDef[] = [
   { key: 'createdAt', label: 'Added' },
 ];
 
-export default function LeadsTable({ leads, sortBy, sortOrder, onSortChange }: LeadsTableProps) {
+export default function LeadsTable({ leads, sortBy, sortOrder, onSortChange, onDelete }: LeadsTableProps) {
   const router = useRouter();
 
   return (
@@ -63,6 +64,7 @@ export default function LeadsTable({ leads, sortBy, sortOrder, onSortChange }: L
                 </span>
               </th>
             ))}
+            <th style={{ width: 44, borderBottom: '1px solid rgba(255,255,255,0.07)' }} />
           </tr>
         </thead>
         <tbody>
@@ -111,6 +113,29 @@ export default function LeadsTable({ leads, sortBy, sortOrder, onSortChange }: L
               </td>
               <td style={{ padding: '11px 16px', color: '#64748B', whiteSpace: 'nowrap' }}>
                 {new Date(lead.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+              </td>
+              <td style={{ padding: '11px 10px', width: 44 }}>
+                <button
+                  type="button"
+                  aria-label={`Delete ${lead.fullName}`}
+                  title={lead.status === 'Calling' ? 'This lead is on a call.' : 'Delete lead'}
+                  disabled={lead.status === 'Calling'}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onDelete(lead);
+                  }}
+                  style={{
+                    width: 28, height: 28, borderRadius: 7,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    border: '1px solid rgba(248,113,113,0.25)',
+                    background: 'rgba(239,68,68,0.08)',
+                    color: '#F87171',
+                    cursor: lead.status === 'Calling' ? 'not-allowed' : 'pointer',
+                    opacity: lead.status === 'Calling' ? 0.4 : 1,
+                  }}
+                >
+                  <Trash2 size={13} />
+                </button>
               </td>
             </tr>
           ))}

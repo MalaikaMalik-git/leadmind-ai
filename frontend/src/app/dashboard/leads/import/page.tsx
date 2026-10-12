@@ -252,7 +252,7 @@ export default function ImportLeadsPage() {
               summary={result.summary}
               failedRows={result.failedRows}
               onImportAnother={handleReset}
-              onViewLeads={() => router.push('/dashboard/leads')}
+              onViewLeads={() => router.push(campaignId ? `/dashboard/campaigns/${campaignId}` : '/dashboard/leads')}
             />
           )}
         </div>

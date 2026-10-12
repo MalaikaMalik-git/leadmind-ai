@@ -237,3 +237,7 @@ export async function updateLead(id: string, payload: UpdateLeadPayload): Promis
   const res = await apiClient.patch(`/api/leads/${id}`, payload);
   return res.data.data as Lead;
 }
+
+export async function deleteLead(id: string): Promise<void> {
+  await apiClient.delete(`/api/leads/${id}`);
+}

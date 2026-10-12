@@ -19,9 +19,10 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { ArrowLeft, AlertCircle, RefreshCw, UserX } from 'lucide-react';
+import { ArrowLeft, AlertCircle, RefreshCw, Trash2, UserX } from 'lucide-react';
 
-import { fetchLeadById, updateLead, LeadDetail, LeadStatus } from '@/src/lib/api/leads';
+import { deleteLead, fetchLeadById, updateLead, LeadDetail, LeadStatus } from '@/src/lib/api/leads';
+import DeleteLeadDialog from '@/src/components/leads/DeleteLeadDialog';
 import LeadInfoCard from '@/src/components/leads/LeadInfoCard';
 import AdminNotesPanel from '@/src/components/leads/AdminNotesPanel';
 import CallHistoryTimeline from '@/src/components/leads/CallHistoryTimeline';
@@ -40,6 +41,9 @@ export default function LeadDetailPage() {
 
   const [isSavingStatus, setIsSavingStatus] = useState(false);
   const [toast, setToast] = useState<ToastState | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   // ── Fetch lead detail ─────────────────────────
   const load = useCallback(async () => {
@@ -168,6 +172,28 @@ export default function LeadDetailPage() {
       {/* ── Loaded state ──────────────────────────── */}
       {!loading && !notFound && !error && detail && (
         <>
+          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <button
+              type="button"
+              disabled={detail.lead.status === 'Calling'}
+              title={detail.lead.status === 'Calling' ? 'This lead is on a call.' : 'Delete lead'}
+              onClick={() => {
+                setDeleteError(null);
+                setConfirmDelete(true);
+              }}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6,
+                padding: '7px 12px', borderRadius: 8,
+                border: '1px solid rgba(248,113,113,0.25)',
+                background: 'rgba(239,68,68,0.08)',
+                color: '#F87171', fontSize: 12, fontWeight: 600,
+                cursor: detail.lead.status === 'Calling' ? 'not-allowed' : 'pointer',
+                opacity: detail.lead.status === 'Calling' ? 0.4 : 1,
+              }}
+            >
+              <Trash2 size={13} /> Delete lead
+            </button>
+          </div>
           <LeadInfoCard
             lead={detail.lead}
             isSavingStatus={isSavingStatus}
@@ -180,6 +206,25 @@ export default function LeadDetailPage() {
         </>
       )}
 
+      {confirmDelete && detail && (
+        <DeleteLeadDialog
+          leadName={detail.lead.fullName}
+          busy={deleteBusy}
+          error={deleteError}
+          onClose={() => { if (!deleteBusy) setConfirmDelete(false); }}
+          onConfirm={async () => {
+            setDeleteBusy(true);
+            setDeleteError(null);
+            try {
+              await deleteLead(id);
+              router.push('/dashboard/leads');
+            } catch (err) {
+              setDeleteError(err instanceof Error ? err.message : 'Could not delete this lead.');
+              setDeleteBusy(false);
+            }
+          }}
+        />
+      )}
       {toast && (
         <Toast type={toast.type} message={toast.message} onDismiss={() => setToast(null)} />
       )}

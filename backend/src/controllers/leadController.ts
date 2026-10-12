@@ -5,6 +5,10 @@ const Lead = require('../models/Lead');
 const Campaign = require('../models/Campaign');
 const CallLog = require('../models/CallLog');
 const Meeting = require('../models/Meeting');
+const Transcript = require('../models/Transcript');
+import { deleteCalendarEvent } from '../services/googleCalendarService';
+import { getValidAccessToken } from '../services/calendarTokenService';
+import { logAction } from '../utils/auditLog';
 
 import { parseCsvBuffer, CsvParseError } from '../utils/csvParser';
 import {
@@ -534,5 +538,110 @@ export const updateLead = async (req: Request, res: Response): Promise<void> => 
     }
     console.error('[updateLead]', err);
     res.status(500).json({ success: false, message: 'Server error while updating lead.' });
+  }
+};
+
+const QUALIFIED_STATUSES = ['Qualified', 'Meeting Booked', 'Qualified (No Slot)', 'Qualified (Booking Failed)'];
+
+async function refreshCampaignStats(campaignId: string): Promise<void> {
+  const [totalLeads, qualified, notQualified, meetingsBooked, calls] = await Promise.all([
+    Lead.countDocuments({ campaign: campaignId }),
+    Lead.countDocuments({ campaign: campaignId, status: { $in: QUALIFIED_STATUSES } }),
+    Lead.countDocuments({ campaign: campaignId, status: 'Not Qualified' }),
+    Meeting.countDocuments({ campaign: campaignId, status: 'Scheduled' }),
+    CallLog.find({ campaign: campaignId }).select('status answeredAt').lean(),
+  ]);
+
+  await Campaign.updateOne({ _id: campaignId }, {
+    $set: {
+      'stats.totalLeads': totalLeads,
+      'stats.qualified': qualified,
+      'stats.notQualified': notQualified,
+      'stats.meetingsBooked': meetingsBooked,
+      'stats.callsMade': calls.length,
+      'stats.callsAnswered': calls.filter((call: { answeredAt?: Date | null }) => call.answeredAt).length,
+      'stats.noAnswer': calls.filter((call: { status?: string }) => call.status === 'No Answer').length,
+      'stats.failed': calls.filter((call: { status?: string }) => call.status === 'Failed').length,
+    },
+  });
+}
+
+async function removeLeadCalendarEvents(adminId: string, leadId: string): Promise<void> {
+  const meetings = await Meeting.find({ lead: leadId }).select('status googleCalendar.eventId').lean();
+  const events = meetings.filter((meeting: { googleCalendar?: { eventId?: string | null } }) => meeting.googleCalendar?.eventId);
+  if (events.length === 0) return;
+
+  let token: string;
+  try {
+    token = await getValidAccessToken(adminId);
+  } catch {
+    console.warn('[deleteLead] calendar is not connected, so the Google event was left in place');
+    return;
+  }
+
+  for (const meeting of events) {
+    try {
+      await deleteCalendarEvent(
+        token,
+        meeting.googleCalendar.eventId,
+        meeting.status === 'Scheduled' ? 'all' : 'none',
+      );
+    } catch (err) {
+      console.warn('[deleteLead] could not remove a calendar event', err);
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  DELETE /api/leads/:id
+//  Removes one lead and the calls, transcripts, and meetings that belong to it.
+//  A lead who is on a call right now is left alone until that call ends.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const deleteLead = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const leadId = req.params.id as string;
+    const lead = await findOwnedLead(leadId, req.admin!.adminId);
+    if (!lead) {
+      res.status(404).json({ success: false, message: 'Lead not found.' });
+      return;
+    }
+
+    if (lead.status === 'Calling') {
+      res.status(409).json({
+        success: false,
+        message: 'This lead is on a call. Wait until the call ends, then delete them.',
+      });
+      return;
+    }
+
+    const campaignId = lead.campaign?._id ? String(lead.campaign._id) : null;
+    await removeLeadCalendarEvents(req.admin!.adminId, leadId);
+
+    await Promise.all([
+      Meeting.deleteMany({ lead: leadId }),
+      Transcript.deleteMany({ lead: leadId }),
+      CallLog.deleteMany({ lead: leadId }),
+    ]);
+    await Lead.deleteOne({ _id: leadId });
+
+    if (campaignId) await refreshCampaignStats(campaignId);
+
+    await logAction(
+      'lead.delete',
+      req.admin!.adminId,
+      req.admin!.email,
+      `Deleted lead "${lead.fullName}".`,
+      { leadId, fullName: lead.fullName, campaignId },
+    );
+
+    res.status(200).json({ success: true, message: 'Lead deleted.' });
+  } catch (err: any) {
+    if (err.name === 'CastError') {
+      res.status(404).json({ success: false, message: 'Lead not found.' });
+      return;
+    }
+    console.error('[deleteLead]', err);
+    res.status(500).json({ success: false, message: 'Server error while deleting lead.' });
   }
 };

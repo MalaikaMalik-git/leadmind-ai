@@ -7,7 +7,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
-  AlertCircle, ArrowLeft, MessagesSquare, Pause, Phone, Play, RefreshCw, Settings, Upload,
+  AlertCircle, ArrowLeft, MessagesSquare, Pause, Phone, Play, RefreshCw, Settings, Trash2, Upload,
 } from 'lucide-react';
 
 import { Campaign } from '@/src/components/campaigns/CampaignCard';
@@ -16,7 +16,9 @@ import TranscriptViewer from '@/src/components/transcripts/TranscriptViewer';
 import { PageLoader, Spinner } from '@/src/components/ui/Spinner';
 import Toast, { ToastState } from '@/src/components/ui/Toast';
 import { getCampaignById, updateCampaignStatus } from '@/src/lib/api/campaigns';
-import { fetchLeads, Lead, LeadStatus } from '@/src/lib/api/leads';
+import { deleteLead, fetchLeads, Lead, LeadStatus } from '@/src/lib/api/leads';
+import ImportLeadsDialog from '@/src/components/leads/ImportLeadsDialog';
+import DeleteLeadDialog from '@/src/components/leads/DeleteLeadDialog';
 import {
   fetchLeadTranscripts, fetchTranscriptById, TranscriptDetail, TranscriptSummary,
 } from '@/src/lib/api/transcripts';
@@ -107,6 +109,10 @@ export default function CampaignWorkspacePage() {
   const transcriptGen = useRef(0);
   const [statusBusy, setStatusBusy] = useState(false);
   const [toast, setToast] = useState<ToastState | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<Lead | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -345,7 +351,7 @@ export default function CampaignWorkspacePage() {
           <HeaderButton
             icon={<Upload size={12} strokeWidth={2} />}
             label="Import"
-            onClick={() => router.push(`/dashboard/leads/import?campaignId=${id}`)}
+            onClick={() => setImportOpen(true)}
           />
           <HeaderButton
             icon={<Settings size={12} strokeWidth={2} />}
@@ -405,17 +411,23 @@ export default function CampaignWorkspacePage() {
           ) : (
             visibleLeads.map((lead) => {
               const selected = lead._id === selectedLeadId;
+              const onCall = lead.status === 'Calling';
               return (
-                <button
+                <div
                   key={lead._id}
-                  onClick={() => setSelectedLeadId(lead._id)}
                   style={{
-                    display: 'block', width: '100%', textAlign: 'left',
-                    padding: '12px 14px', cursor: 'pointer',
+                    display: 'flex', alignItems: 'stretch',
                     background: selected ? 'rgba(59,130,246,0.08)' : 'transparent',
-                    border: 'none',
                     borderLeft: selected ? '2px solid #3B82F6' : '2px solid transparent',
                     borderBottom: '1px solid rgba(255,255,255,0.04)',
+                  }}
+                >
+                <button
+                  onClick={() => setSelectedLeadId(lead._id)}
+                  style={{
+                    display: 'block', flex: 1, minWidth: 0, textAlign: 'left',
+                    padding: '12px 8px 12px 12px', cursor: 'pointer',
+                    background: 'transparent', border: 'none',
                   }}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
@@ -434,6 +446,29 @@ export default function CampaignWorkspacePage() {
                     <span style={{ color: '#334155', fontSize: 10.5 }}>{lead.phone}</span>
                   </div>
                 </button>
+                <button
+                  type="button"
+                  aria-label={`Delete ${lead.fullName}`}
+                  title={onCall ? 'This lead is on a call.' : 'Delete lead'}
+                  disabled={onCall}
+                  onClick={() => {
+                    setDeleteError(null);
+                    setDeleteTarget(lead);
+                  }}
+                  style={{
+                    alignSelf: 'center', marginRight: 8,
+                    width: 28, height: 28, borderRadius: 7, flexShrink: 0,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    border: '1px solid rgba(248,113,113,0.25)',
+                    background: 'rgba(239,68,68,0.08)',
+                    color: '#F87171',
+                    cursor: onCall ? 'not-allowed' : 'pointer',
+                    opacity: onCall ? 0.4 : 1,
+                  }}
+                >
+                  <Trash2 size={13} />
+                </button>
+                </div>
               );
             })
           )}
@@ -461,7 +496,29 @@ export default function CampaignWorkspacePage() {
                     {selectedLead.jobTitle ? ` · ${selectedLead.jobTitle}` : ''}
                   </p>
                 </div>
-                <LeadStatusBadge status={selectedLead.status} />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <LeadStatusBadge status={selectedLead.status} />
+                  <button
+                    type="button"
+                    disabled={selectedLead.status === 'Calling'}
+                    title={selectedLead.status === 'Calling' ? 'This lead is on a call.' : 'Delete lead'}
+                    onClick={() => {
+                      setDeleteError(null);
+                      setDeleteTarget(selectedLead);
+                    }}
+                    style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 5,
+                      padding: '5px 9px', borderRadius: 7,
+                      border: '1px solid rgba(248,113,113,0.25)',
+                      background: 'rgba(239,68,68,0.08)',
+                      color: '#F87171', fontSize: 11, fontWeight: 600,
+                      cursor: selectedLead.status === 'Calling' ? 'not-allowed' : 'pointer',
+                      opacity: selectedLead.status === 'Calling' ? 0.4 : 1,
+                    }}
+                  >
+                    <Trash2 size={12} /> Delete
+                  </button>
+                </div>
               </div>
 
               <div style={{
@@ -560,6 +617,41 @@ export default function CampaignWorkspacePage() {
           )}
         </section>
       </div>
+      {importOpen && campaign && (
+        <ImportLeadsDialog
+          campaignId={id}
+          campaignName={campaign.name}
+          onClose={() => setImportOpen(false)}
+          onImported={() => { load(); }}
+          onViewLeads={() => {
+            setImportOpen(false);
+            setFilter('All');
+            load();
+          }}
+        />
+      )}
+      {deleteTarget && (
+        <DeleteLeadDialog
+          leadName={deleteTarget.fullName}
+          busy={deleteBusy}
+          error={deleteError}
+          onClose={() => { if (!deleteBusy) setDeleteTarget(null); }}
+          onConfirm={async () => {
+            setDeleteBusy(true);
+            setDeleteError(null);
+            try {
+              await deleteLead(deleteTarget._id);
+              setToast({ type: 'success', message: `${deleteTarget.fullName} was deleted.` });
+              setDeleteTarget(null);
+              await load();
+            } catch (err) {
+              setDeleteError(err instanceof Error ? err.message : 'Could not delete this lead.');
+            } finally {
+              setDeleteBusy(false);
+            }
+          }}
+        />
+      )}
       {toast && (
         <Toast
           type={toast.type}

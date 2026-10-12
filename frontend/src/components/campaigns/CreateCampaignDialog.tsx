@@ -17,7 +17,7 @@ interface Props {
   /** Campaign was saved as a draft. The list should refresh. */
   onCreated: (message: string) => void;
   /** Campaign was saved and the user wants to import leads next. */
-  onUploadLeads: (campaignId: string) => void;
+  onUploadLeads: (campaign: { _id: string; name: string }) => void;
 }
 
 export default function CreateCampaignDialog({ onClose, onCreated, onUploadLeads }: Props) {
@@ -50,7 +50,7 @@ export default function CreateCampaignDialog({ onClose, onCreated, onUploadLeads
     setFieldErrors([]);
     try {
       const campaign = await createCampaign(toCampaignPayload(form));
-      if (next === 'upload') onUploadLeads(campaign._id);
+      if (next === 'upload') onUploadLeads({ _id: campaign._id, name: campaign.name });
       else onCreated(`“${campaign.name}” saved as a draft.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save campaign. Please try again.');

@@ -20,12 +20,13 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
   Search, Filter, AlertCircle, RefreshCw, Upload,
-  Users, ChevronLeft, ChevronRight, X,
+  Users, ChevronLeft, ChevronRight, X, ArrowLeft,
 } from 'lucide-react';
 
 import SkeletonTable from '@/src/components/ui/SkeletonTable';
 import LeadsTable from '@/src/components/leads/LeadsTable';
-import { fetchLeads, Lead, LeadQuery, LeadStatus, LeadSource } from '@/src/lib/api/leads';
+import { deleteLead, fetchLeads, Lead, LeadQuery, LeadStatus, LeadSource } from '@/src/lib/api/leads';
+import DeleteLeadDialog from '@/src/components/leads/DeleteLeadDialog';
 import { fetchCampaigns } from '@/src/lib/api/campaigns';
 import { Campaign } from '@/src/components/campaigns/CampaignCard';
 
@@ -58,6 +59,9 @@ export default function LeadsPage() {
   const [page, setPage] = useState(1);
   const [sortBy, setSortBy] = useState<NonNullable<LeadQuery['sortBy']>>('createdAt');
   const [sortOrder, setSortOrder] = useState<NonNullable<LeadQuery['sortOrder']>>('desc');
+  const [deleteTarget, setDeleteTarget] = useState<Lead | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const hasActiveFilters = !!(search || status || campaignFilter || source);
 
@@ -140,6 +144,17 @@ export default function LeadsPage() {
       {/* ── Page header ─────────────────────────── */}
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
         <div>
+          <button
+            type="button"
+            onClick={() => router.push('/dashboard')}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8,
+              background: 'none', border: 'none', cursor: 'pointer',
+              color: '#64748B', fontSize: 12, fontWeight: 500, padding: 0,
+            }}
+          >
+            <ArrowLeft size={13} strokeWidth={2} /> Dashboard
+          </button>
           <h2 style={{ color: '#F8FAFC', fontSize: 18, fontWeight: 700, margin: 0, lineHeight: 1 }}>
             Leads
           </h2>
@@ -237,11 +252,41 @@ export default function LeadsPage() {
         <EmptyState hasFilters={hasActiveFilters} onClearFilters={clearFilters} onImport={() => router.push('/dashboard/leads/import')} />
       ) : (
         <>
-          <LeadsTable leads={leads} sortBy={sortBy} sortOrder={sortOrder} onSortChange={handleSortChange} />
+          <LeadsTable
+            leads={leads}
+            sortBy={sortBy}
+            sortOrder={sortOrder}
+            onSortChange={handleSortChange}
+            onDelete={(lead) => {
+              setDeleteError(null);
+              setDeleteTarget(lead);
+            }}
+          />
           {totalPages > 1 && (
             <Pagination page={page} totalPages={totalPages} onPageChange={setPage} />
           )}
         </>
+      )}
+      {deleteTarget && (
+        <DeleteLeadDialog
+          leadName={deleteTarget.fullName}
+          busy={deleteBusy}
+          error={deleteError}
+          onClose={() => { if (!deleteBusy) setDeleteTarget(null); }}
+          onConfirm={async () => {
+            setDeleteBusy(true);
+            setDeleteError(null);
+            try {
+              await deleteLead(deleteTarget._id);
+              setDeleteTarget(null);
+              await loadLeads(query);
+            } catch (err) {
+              setDeleteError(err instanceof Error ? err.message : 'Could not delete this lead.');
+            } finally {
+              setDeleteBusy(false);
+            }
+          }}
+        />
       )}
     </div>
   );
