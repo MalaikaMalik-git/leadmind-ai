@@ -156,6 +156,9 @@ export async function runSchedulingTool(
   args: Record<string, unknown>,
   ctx: SchedulingToolContext
 ): Promise<Record<string, unknown>> {
+  if (name === 'confirm_lead_name') {
+    return confirmName(args, ctx);
+  }
   if (name === 'confirm_lead_email') {
     return confirmEmail(args, ctx);
   }
@@ -170,6 +173,26 @@ export async function runSchedulingTool(
     return withLeadLock(ctx.leadId, () => bookTime(args, ctx));
   }
   return { calendarChecked: false, say: 'That action is not available. Do not name a day or time.' };
+}
+
+const PLACEHOLDER_NAME = 'Inbound Caller';
+const NAME_PATTERN = /^[\p{L}][\p{L}\s.'-]{0,79}$/u;
+
+async function confirmName(args: Record<string, unknown>, ctx: SchedulingToolContext): Promise<Record<string, unknown>> {
+  if (!ctx.leadId) return { ok: false, say: 'Ask them to repeat their name.' };
+  const name = String(args.fullName || '').trim().replace(/\s+/g, ' ');
+  if (!NAME_PATTERN.test(name)) {
+    return { ok: false, say: 'Ask them to repeat their name. Pass only the name, not a sentence.' };
+  }
+  const lead = await Lead.findById(ctx.leadId);
+  if (!lead) return { ok: false, say: 'Ask them to repeat their name.' };
+  const current = String(lead.fullName || '').trim();
+  if (current && current !== PLACEHOLDER_NAME) {
+    return { ok: true, fullName: current, say: `Their name on file is ${current}. Keep using that name.` };
+  }
+  lead.fullName = name;
+  await lead.save();
+  return { ok: true, fullName: name, say: `Saved their name as ${name}.` };
 }
 
 async function confirmEmail(args: Record<string, unknown>, ctx: SchedulingToolContext): Promise<Record<string, unknown>> {

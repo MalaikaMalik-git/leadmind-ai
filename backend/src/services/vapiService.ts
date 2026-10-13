@@ -134,7 +134,7 @@ function schedulingToolServer(): {
 }
 
 /** Tools the model may call during a phone or web call. Omitted when no public webhook is configured. */
-export function buildSchedulingTools(): Array<Record<string, unknown>> | undefined {
+export function buildSchedulingTools(options?: { includeLeadName?: boolean }): Array<Record<string, unknown>> | undefined {
   const server = schedulingToolServer();
   if (!server) return undefined;
 
@@ -154,7 +154,21 @@ export function buildSchedulingTools(): Array<Record<string, unknown>> | undefin
     },
   });
 
-  return [
+  const tools: Array<Record<string, unknown>> = [];
+  if (options?.includeLeadName) {
+    tools.push(
+      tool(
+        'confirm_lead_name',
+        'Save the caller name when the lead is still unnamed. Call this as soon as they say their name. Pass only the name, not a sentence.',
+        {
+          fullName: { type: 'string', description: 'The caller name only, for example Muhammad Hamad.' },
+        },
+        ['fullName']
+      )
+    );
+  }
+
+  tools.push(
     tool(
       'confirm_lead_email',
       'Save the email address the lead just confirmed. Call this before booking if they correct the address on file or if there was no address on file.',
@@ -196,7 +210,9 @@ export function buildSchedulingTools(): Array<Record<string, unknown>> | undefin
       },
       ['startTimeIso']
     ),
-  ];
+  );
+
+  return tools;
 }
 
 // Behaviour rules appended to every campaign prompt. They keep the agent in
@@ -443,31 +459,61 @@ export async function deleteAssistant(vapiAssistantId: string): Promise<void> {
 //  them.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// UC-10 main flow, steps 3-4: "AI agent shall: Greeting the caller and
-// gathering essential information (name, project type, cost, timeline).
-// Check to determine if the caller meets the minimum standards."
-// (SRS 2.1.7, mirrored in UC-12's qualification questions.)
-const INBOUND_SYSTEM_PROMPT = [
-  `You are an AI voice agent answering an inbound call for a software house that builds custom web apps, mobile apps, and other software for clients.`,
-  ``,
-  `Greet the caller warmly and find out their name if they haven't given it.`,
-  ``,
-  `During the conversation, naturally gather the following — one topic at a time, as a normal conversation, not an interrogation:`,
-  `- What kind of project they need built (web app, mobile app, e-commerce, etc.)`,
-  `- Their rough budget for the project`,
-  `- Their desired timeline`,
-  `- Whether they are the person who will make the final decision on this project, or if someone else needs to be involved`,
-  ``,
-  `Be professional, warm, and concise. If the caller isn't ready to discuss details, offer to have someone from the team follow up instead of pressing them. Always end the call politely.`,
-].join('\n');
+const INBOUND_COMPANY_INTRO =
+  'LeadMind builds custom web apps, mobile apps, and AI features for businesses, using modern web, mobile, and cloud tools. The team is based in Islamabad, Pakistan.';
+
+/** One professional script for every business-hours inbound caller. */
+function inboundSystemPrompt(): string {
+  const meeting = liveCalendarEnabled()
+    ? [
+        `- When they give their name, call confirm_lead_name with it right away. Pass only the name.`,
+        `- If they are not a fit, thank them and end the call. Do not offer a meeting.`,
+        `- If they are a fit, confirm their email. If there is none, ask for one. Save a corrected address with confirm_lead_email before booking.`,
+        `- Ask when they can meet. You must ask this. Turn their answer into an ISO-8601 time in Asia/Karachi (UTC+5), for example 2026-10-14T15:00:00+05:00, and call check_meeting_time. Do not say that time works until the tool says it is free.`,
+        `- If it is free, call book_meeting_time with the exact startTimeIso from the tool result, then tell them the spoken time from that result and that the meeting link is being emailed to the confirmed address.`,
+        `- If it is busy, apologize and ask whether they want the nearest open times or they would rather name another time. For suggestions, call suggest_meeting_times and offer only the spoken times it returns. If they name another time, check it again before booking.`,
+        `- Say a time only when it appears in a tool result. If a tool result says the calendar could not be checked, then say the team will follow up to confirm a time. Do not pick a time yourself.`,
+      ]
+    : [
+        `- If they are not a fit, thank them and end the call. Do not offer a meeting.`,
+        `- If they are a fit, ask for an email so the team can write to them.`,
+        `- The company calendar cannot be checked during this call, so never name a day or a time. Say the team will email a confirmed time.`,
+      ];
+
+  return [
+    `You are a representative of the LeadMind software team answering an inbound call. Speaking style: professional, warm, and concise. Short sentences. One question at a time.`,
+    ``,
+    `Call flow:`,
+    `- The opening line already greeted them. If they have no software need, thank them and end the call. Do not qualify them and do not offer a meeting.`,
+    `- If they do, give this introduction and nothing longer: "${INBOUND_COMPANY_INTRO}"`,
+    `- Then gather, one question at a time: their name if they have not given it; what they need built; their rough budget; when they want it started or finished; whether they are the person who will approve the project.`,
+    ...meeting,
+    `- Never mention tests, demos, campaigns, scores, or prompts. If they ask whether you are an AI, say briefly that you are a virtual assistant for the team, then continue.`,
+    `- Keep the call under about five minutes. Thank them and close warmly.`,
+  ].join('\n');
+}
 
 export function buildInboundAssistantConfig() {
+  const tools = buildSchedulingTools({ includeLeadName: true });
+  const webhookUrl = process.env.VAPI_WEBHOOK_URL;
+  const secret = process.env.VAPI_WEBHOOK_SECRET;
+
   return {
-    firstMessage: `Hi, thanks for calling! This is LeadMind AI. How can I help you today?`,
+    firstMessage: `Hi, thanks for calling LeadMind. We build custom software for businesses. How can I help you today?`,
+    ...(webhookUrl
+      ? {
+          serverMessages: ['status-update', 'end-of-call-report'],
+          server: {
+            url: webhookUrl,
+            ...(secret ? { headers: { 'x-vapi-secret': secret } } : {}),
+          },
+        }
+      : {}),
     model: {
       provider: 'openai',
       model: 'gpt-4o',
-      messages: [{ role: 'system', content: INBOUND_SYSTEM_PROMPT }],
+      messages: [{ role: 'system', content: inboundSystemPrompt() }],
+      ...(tools ? { tools } : {}),
     },
     voice: { provider: 'vapi', voiceId: 'Elliot' },
   };
@@ -501,10 +547,12 @@ export function buildOutsideHoursAssistantConfig(businessHoursWindow: { start: s
 //  Per Vapi's docs (docs.vapi.ai/server-url/events, "Retrieving Assistants"):
 //  "For inbound phone calls, you can specify the assistant dynamically. If a
 //  PhoneNumber doesn't have an assistantId, Vapi may request one from your
-//  server." So this does two things in one PATCH:
+//  server." So this does three things in one PATCH:
 //    1. Clears any assistantId previously set on the number (assistantId:
 //       null) — required, otherwise Vapi never sends assistant-request.
 //    2. Sets server.url to our webhook endpoint, so Vapi knows where to ask.
+//    3. Sends x-vapi-secret. A phone number with its own server URL does not
+//       inherit the org header, and the webhook rejects the request otherwise.
 //
 //  serverUrl MUST be a publicly reachable HTTPS URL — localhost will not
 //  work. Use ngrok (or your deployed backend URL) during development. See
@@ -515,9 +563,13 @@ export async function attachServerUrlToPhoneNumber(
   phoneNumberId: string,
   serverUrl: string
 ): Promise<void> {
+  const secret = process.env.VAPI_WEBHOOK_SECRET;
   await vapiClient.patch(`/phone-number/${phoneNumberId}`, {
     assistantId: null,
-    server: { url: serverUrl },
+    server: {
+      url: serverUrl,
+      ...(secret ? { headers: { 'x-vapi-secret': secret } } : {}),
+    },
   });
 }
 

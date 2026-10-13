@@ -90,6 +90,7 @@ import { getBusinessHoursStatus } from '../utils/businessHours';
 import { buildInboundAssistantConfig, buildOutsideHoursAssistantConfig } from '../services/vapiService';
 import { logError } from '../utils/errorLog';
 import { buildTranscriptMessages } from '../utils/transcriptMessages';
+import { pakistanPhonePattern, phoneLookupVariants } from '../utils/duplicateDetection';
 
 // ── Statuses that mean the call never actually connected — eligible for retry ──
 const RETRYABLE_CALL_STATUSES = ['No Answer', 'Busy', 'Voicemail', 'Failed'];
@@ -264,6 +265,25 @@ function handleAssistantRequest(message: any, res: Response): void {
 //  "Lead outcome status is recorded").
 // ─────────────────────────────────────────────────────────────────────────────
 
+async function findLeadByCallerPhone(fromNumber: string): Promise<any | null> {
+  const variants = phoneLookupVariants(fromNumber);
+  const pattern = pakistanPhonePattern(fromNumber);
+  const clauses: Record<string, unknown>[] = [];
+  if (variants.length) clauses.push({ phone: { $in: variants } });
+  if (pattern) clauses.push({ phone: pattern });
+  if (!clauses.length) return null;
+
+  const leads = await Lead.find(clauses.length === 1 ? clauses[0] : { $or: clauses });
+  if (!leads.length) return null;
+
+  leads.sort((a: any, b: any) => {
+    const campaignRank = (b.campaign ? 1 : 0) - (a.campaign ? 1 : 0);
+    if (campaignRank !== 0) return campaignRank;
+    return new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime();
+  });
+  return leads[0];
+}
+
 async function findOrCreateInboundCallLog(message: any): Promise<any | null> {
   const vapiCallId = message.call?.id;
   if (!vapiCallId) return null;
@@ -282,7 +302,7 @@ async function findOrCreateInboundCallLog(message: any): Promise<any | null> {
   // session's own Part C test, so fixing it properly now rather than
   // leaving it deferred).
   //
-  // Global findOne first: recognizes a RETURNING lead regardless of which
+  // Format-insensitive lookup first: recognizes a RETURNING lead regardless of which
   // campaign they belong to (or none) — this is what makes a past
   // outbound lead calling back correctly reuse their existing history
   // instead of fragmenting into a duplicate record.
@@ -301,7 +321,7 @@ async function findOrCreateInboundCallLog(message: any): Promise<any | null> {
   // is at most a second Lead document across campaigns, which is the
   // SAME already-accepted behavior Day 11 intentionally allows, not a new
   // kind of bug.
-  let lead = fromNumber ? await Lead.findOne({ phone: fromNumber }) : null;
+  let lead = fromNumber ? await findLeadByCallerPhone(fromNumber) : null;
 
   if (lead) {
     lead.status = 'Calling';
@@ -422,7 +442,7 @@ async function resolveToolContext(message: any): Promise<{ leadId: string | null
   const isId = (value: string) => /^[a-f\d]{24}$/i.test(value);
 
   if (!isId(leadId)) {
-    const callLog = await findCallLogForEvent(message);
+    const callLog = (await findCallLogForEvent(message)) || (await findOrCreateInboundCallLog(message));
     if (callLog) {
       leadId = String(callLog.lead);
       if (!isId(campaignId) && callLog.campaign) campaignId = String(callLog.campaign);

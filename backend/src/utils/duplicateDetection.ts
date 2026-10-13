@@ -24,6 +24,53 @@ export interface ExistingContacts {
 export const normalizePhone = (phone: string): string =>
   phone.replace(/[\s\-().]/g, '').trim();
 
+/**
+ * Forms of one caller number that should match a stored lead.
+ * Covers +92, 92, and a leading 0 for Pakistan mobiles, plus the raw value.
+ */
+export function phoneLookupVariants(raw: string): string[] {
+  const trimmed = raw.trim();
+  const compact = normalizePhone(trimmed);
+  const digits = compact.replace(/\D/g, '');
+  const variants = new Set<string>();
+  if (trimmed) variants.add(trimmed);
+  if (compact) variants.add(compact);
+  if (digits) {
+    variants.add(digits);
+    variants.add(`+${digits}`);
+  }
+
+  let national = digits;
+  if (national.startsWith('92') && national.length > 10) national = national.slice(2);
+  else if (national.startsWith('0') && national.length > 1) national = national.slice(1);
+  if (national.length >= 10) {
+    national = national.slice(-10);
+    variants.add(national);
+    variants.add(`0${national}`);
+    variants.add(`92${national}`);
+    variants.add(`+92${national}`);
+  }
+  return [...variants];
+}
+
+/**
+ * Matches a stored Pakistan number that still contains spaces or dashes.
+ * Other countries stay on exact variant lookup so a short suffix cannot collide.
+ */
+export function pakistanPhonePattern(raw: string): RegExp | null {
+  const digits = raw.replace(/\D/g, '');
+  if (!digits.startsWith('92') && !digits.startsWith('0')) return null;
+
+  let national = digits;
+  if (national.startsWith('92') && national.length > 10) national = national.slice(2);
+  else if (national.startsWith('0')) national = national.slice(1);
+  if (national.length < 10) return null;
+  national = national.slice(-10);
+
+  const body = national.split('').join('[\\s\\-().]*');
+  return new RegExp(`^(?:\\+?92[\\s\\-().]*)?0?${body}$`);
+}
+
 export const normalizeEmail = (email: string): string => email.trim().toLowerCase();
 
 /**

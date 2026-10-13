@@ -45,11 +45,16 @@ async function run() {
     console.error('❌ VAPI_PHONE_NUMBER_ID is not set in backend/.env');
     process.exit(1);
   }
+  if (!process.env.VAPI_WEBHOOK_SECRET) {
+    console.error('❌ VAPI_WEBHOOK_SECRET is not set in backend/.env');
+    process.exit(1);
+  }
 
   const webhookUrl = `${publicUrl.replace(/\/$/, '')}/api/webhooks/vapi`;
 
   console.log(`Attaching server URL to phone number ${phoneNumberId}...`);
   console.log(`  Server URL: ${webhookUrl}`);
+  console.log(`  Webhook secret header: included`);
   console.log(`  Clearing any existing static assistantId (required for assistant-request to fire)\n`);
 
   try {
